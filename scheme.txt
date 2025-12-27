@@ -1,0 +1,10 @@
+Nokia 5110  →  LM4F120XL
+--------------------------------
+VCC         →   VCC
+GND         →   GND
+SCE (CS)    →   PA6
+RST         →   PB2
+D/C         →   PA7
+DN (MOSI)   →   PA5
+SCLK        →   PA2
+LED         →   PB3
