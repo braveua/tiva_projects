@@ -8,6 +8,8 @@
       // startup_gcc.c -I $TW -L /home/brave/ti/tivaware/driverlib/gcc -ldriver -lgcc -lc
       "command": "arm-none-eabi-gcc",
       "args": [
+        "-DPART_TM4C123GH6PM",
+        "-DTARGET_IS_TM4C123_RA1",
         "-mcpu=cortex-m4",
         "-mthumb",
         "-mfloat-abi=hard",

@@ -1,110 +1,173 @@
 #include <stdint.h>
-#include "inc/tm4c123gh6pm.h"
+#include <stdbool.h>
+// #include "inc/tm4c123gh6pm.h"
+#include "inc/hw_memmap.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/ssi.h"
+#include "driverlib/pin_map.h" 
+#include "driverlib/uart.h"
+#include "inc/hw_ints.h"
+#include "driverlib/interrupt.h"
 #include "font.h"
 
-/* ===== LCD pins (YOUR WIRING) ===== */
-#define LCD_CS_LOW()   (GPIO_PORTA_DATA_R &= ~(1 << 6))
-#define LCD_CS_HIGH()  (GPIO_PORTA_DATA_R |=  (1 << 6))
+/* ===== LCD pins ===== */
+#define LCD_CS_PORT  GPIO_PORTA_BASE
+#define LCD_CS_PIN   GPIO_PIN_6
 
-#define LCD_DC_CMD()   (GPIO_PORTA_DATA_R &= ~(1 << 7))
-#define LCD_DC_DATA()  (GPIO_PORTA_DATA_R |=  (1 << 7))
+#define LCD_DC_PORT  GPIO_PORTA_BASE
+#define LCD_DC_PIN   GPIO_PIN_7
 
-#define LCD_RST_LOW()  (GPIO_PORTB_DATA_R &= ~(1 << 2))
-#define LCD_RST_HIGH() (GPIO_PORTB_DATA_R |=  (1 << 2))
+#define LCD_RST_PORT GPIO_PORTB_BASE
+#define LCD_RST_PIN  GPIO_PIN_2
 
-/* ===== Delay ===== */
-static void delay(volatile uint32_t d) {
-    while (d--) __asm("nop");
+#define CS_LOW()   GPIOPinWrite(LCD_CS_PORT, LCD_CS_PIN, 0)
+#define CS_HIGH()  GPIOPinWrite(LCD_CS_PORT, LCD_CS_PIN, LCD_CS_PIN)
+#define DC_CMD()   GPIOPinWrite(LCD_DC_PORT, LCD_DC_PIN, 0)
+#define DC_DATA()  GPIOPinWrite(LCD_DC_PORT, LCD_DC_PIN, LCD_DC_PIN)
+#define RST_LOW()  GPIOPinWrite(LCD_RST_PORT, LCD_RST_PIN, 0)
+#define RST_HIGH() GPIOPinWrite(LCD_RST_PORT, LCD_RST_PIN, LCD_RST_PIN)
+
+#define UART_BUF_SIZE 64
+
+static char uart_buf[UART_BUF_SIZE];
+static volatile uint8_t uart_pos = 0;
+static volatile bool uart_line_ready = false;
+
+/* ===== LCD API prototypes ===== */
+// static void lcd_hw_init(void);
+static void lcd_init(void);
+static void lcd_goto(uint8_t x, uint8_t y);
+static void lcd_print(const char *s);
+static void lcd_clear(void);
+/* ===== UART ===== */
+static void uart_init(void) {
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
+
+    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_UART0));
+
+    GPIOPinConfigure(GPIO_PA0_U0RX);
+    GPIOPinConfigure(GPIO_PA1_U0TX);
+
+    GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+
+    UARTConfigSetExpClk(UART0_BASE,
+                        SysCtlClockGet(),
+                        115200,
+                        UART_CONFIG_WLEN_8 |
+                        UART_CONFIG_STOP_ONE |
+                        UART_CONFIG_PAR_NONE);
+
+    UARTEnable(UART0_BASE);
+}
+
+static void uart_poll(void) {
+    while (UARTCharsAvail(UART0_BASE)) {
+        char c = UARTCharGetNonBlocking(UART0_BASE);
+
+        if (c == '\r') continue;
+
+        if (c == '\n') {
+            uart_buf[uart_pos] = 0;
+            uart_pos = 0;
+            uart_line_ready = true;
+            return;
+        }
+
+        if (uart_pos < UART_BUF_SIZE - 1) {
+            uart_buf[uart_pos++] = c;
+        }
+    }
+}
+
+static uint8_t lcd_row = 0;
+
+static void lcd_print_line(const char *s) {
+    lcd_goto(0, lcd_row);
+    lcd_print(s);
+
+    if (++lcd_row >= 6) {
+        lcd_row = 0;
+        lcd_clear();
+    }
 }
 
 /* ===== SPI ===== */
 static void spi_send(uint8_t data) {
-    while ((SSI0_SR_R & (1 << 1)) == 0);
-    SSI0_DR_R = data;
-    while (SSI0_SR_R & (1 << 4));
+    uint32_t dummy;
+    SSIDataPut(SSI0_BASE, data);
+    SSIDataGet(SSI0_BASE, &dummy);
 }
 
-/* ===== LCD low level ===== */
+/* ===== LCD ===== */
 static void lcd_cmd(uint8_t c) {
-    LCD_DC_CMD();
-    LCD_CS_LOW();
+    DC_CMD();
+    CS_LOW();
     spi_send(c);
-    LCD_CS_HIGH();
+    CS_HIGH();
 }
 
 static void lcd_data(uint8_t d) {
-    LCD_DC_DATA();
-    LCD_CS_LOW();
+    DC_DATA();
+    CS_LOW();
     spi_send(d);
-    LCD_CS_HIGH();
+    CS_HIGH();
 }
 
-/* ===== LCD init ===== */
 static void lcd_init(void) {
-    LCD_RST_LOW();
-    delay(50000);
-    LCD_RST_HIGH();
+    RST_LOW();
+    SysCtlDelay(SysCtlClockGet()/100);
+    RST_HIGH();
 
-    lcd_cmd(0x21);              // extended mode
-    lcd_cmd(0x80 | 0x3E);       // contrast (Vop)
-    lcd_cmd(0x13);              // bias 1:48
-    lcd_cmd(0x06);              // temperature coefficient
-    lcd_cmd(0x20);              // basic mode
-    lcd_cmd(0x0C);              // normal display
+    lcd_cmd(0x21);
+    lcd_cmd(0x80 | 0x3E);   // contrast
+    lcd_cmd(0x13);
+    lcd_cmd(0x06);
+    lcd_cmd(0x20);
+    lcd_cmd(0x0C);
 }
 
-/* ===== Cursor ===== */
 static void lcd_goto(uint8_t x, uint8_t y) {
-    lcd_cmd(0x80 | x);  // column 0..83
-    lcd_cmd(0x40 | y);  // row 0..5
+    lcd_cmd(0x80 | x);
+    lcd_cmd(0x40 | y);
 }
 
-/* ===== Clear ===== */
 static void lcd_clear(void) {
     lcd_goto(0,0);
-    for (int i = 0; i < 504; i++)
+    for (int i=0;i<504;i++)
         lcd_data(0x00);
 }
 
-/* ===== Draw char ===== */
-static void lcd_char(char c) {
-    uint8_t idx;
-
-    idx=c;
-    for (int i = 0; i < 5; i++)
-        lcd_data(ASCII[idx][i]);
-    lcd_data(0x00); // space between chars
+static void lcd_char(uint8_t c) {
+    for (int i=0;i<5;i++)
+        lcd_data(ASCII[c][i]);
+    lcd_data(0x00);
 }
 
-/* ===== Draw string ===== */
+/* ===== UTF-8 print (исправленный) ===== */
 static void lcd_print(const char *s) {
-    unsigned char *ptr = (unsigned char *)s;
-    
-    while (*ptr) {
-        unsigned char c = *ptr++;
+    const uint8_t *p = (const uint8_t *)s;
 
-        // 1. Если это обычный ASCII (английский, цифры, знаки)
-        if (c < 128) {
-            lcd_char(c);
-        } 
-        // 2. Если это первый байт русской буквы (UTF-8)
+    while (*p) {
+        uint8_t c = *p++;
+
+        if (c < 0x80) lcd_char(c);
         else if (c == 0xD0) {
-            c = *ptr++; // Берем второй байт
-            if (c == 0x81) {
-                lcd_char(0xF0); // Символ 'Ё' в CP866
-            } else if (c >= 0x90 && c <= 0xBF) {
-                // Диапазон 'А'-'п': в UTF-8 это 0x90-0xBF, в CP866 это 0x80-0xAF
-                lcd_char(c - 0x10); 
-            }
-        } 
+            uint8_t c2 = *p++;
+            if (c2 == 0x81) lcd_char(0xC0);
+            else if (c2 >= 0x90 && c2 <= 0x9F)
+                lcd_char(0x80 + (c2 - 0x90));
+            else if (c2 >= 0xA0 && c2 <= 0xAF)
+                lcd_char(0x90 + (c2 - 0xA0));
+        }
         else if (c == 0xD1) {
-            c = *ptr++; // Берем второй байт
-            if (c == 0x91) {
-                lcd_char(0xF1); // Символ 'ё' в CP866
-            } else if (c >= 0x80 && c <= 0x8F) {
-                // Диапазон 'р'-'я': в UTF-8 это 0x80-0x8F, в CP866 это 0xE0-0xEF
-                lcd_char(c + 0x60);
-            }
+            uint8_t c2 = *p++;
+            if (c2 == 0x91) lcd_char(0xC1);
+            else if (c2 >= 0x80 && c2 <= 0x8F)
+                lcd_char(0xA0 + (c2 - 0x80));
+            else if (c2 >= 0x90 && c2 <= 0x9F)
+                lcd_char(0xB0 + (c2 - 0x90));
         }
     }
 }
@@ -112,45 +175,43 @@ static void lcd_print(const char *s) {
 /* ===== MAIN ===== */
 int main(void) {
 
-    SYSCTL_RCGCGPIO_R |= (1<<0)|(1<<1)|(1<<5);
-    SYSCTL_RCGCSSI_R  |= (1<<0);
+    SysCtlClockSet(SYSCTL_SYSDIV_4 | SYSCTL_USE_PLL |
+                   SYSCTL_OSC_MAIN | SYSCTL_XTAL_16MHZ);
 
-    while(!(SYSCTL_PRGPIO_R&(1<<0)));
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_SSI0);
 
-    GPIO_PORTF_DIR_R |= (1<<1);
-    GPIO_PORTF_DEN_R |= (1<<1);
+    GPIOPinConfigure(GPIO_PA0_U0RX);
+    GPIOPinConfigure(GPIO_PA1_U0TX);
 
-    GPIO_PORTA_AFSEL_R |= (1<<2)|(1<<5);
-    GPIO_PORTA_PCTL_R  = (GPIO_PORTA_PCTL_R & ~0x00F0F000) | 0x00202000;
-    GPIO_PORTA_DEN_R  |= (1<<2)|(1<<5);
+    GPIOPinTypeSSI(GPIO_PORTA_BASE, GPIO_PIN_2 | GPIO_PIN_5);
+    GPIOPinTypeGPIOOutput(GPIO_PORTA_BASE, GPIO_PIN_6 | GPIO_PIN_7);
+    GPIOPinTypeGPIOOutput(GPIO_PORTB_BASE, GPIO_PIN_2);
 
-    GPIO_PORTA_DIR_R |= (1<<6)|(1<<7);
-    GPIO_PORTA_DEN_R |= (1<<6)|(1<<7);
+    CS_HIGH();
+    RST_HIGH();
 
-    GPIO_PORTB_DIR_R |= (1<<2);
-    GPIO_PORTB_DEN_R |= (1<<2);
+    SSIConfigSetExpClk(SSI0_BASE, SysCtlClockGet(),
+                       SSI_FRF_MOTO_MODE_0,
+                       SSI_MODE_MASTER, 1000000, 8);
+    SSIEnable(SSI0_BASE);
 
-    LCD_CS_HIGH();
-    LCD_RST_HIGH();
-
-    SSI0_CR1_R = 0;
-    SSI0_CPSR_R = 20;
-    SSI0_CR0_R  = 0x07;
-    SSI0_CR1_R |= (1<<1);
-
+    uart_init();
+    // lcd_hw_init();     // твой SPI + GPIO init
     lcd_init();
     lcd_clear();
-
-    /* HELLO WORLD centered */
-    lcd_goto(0, 0);
-    lcd_print("120КЛ:МН098");
-    /* 🔴 ОТКЛЮЧАЕМ SPI */
-    SSI0_CR1_R &= ~(1<<1);   // Disable SSI
-    LCD_CS_HIGH();           // LCD deselect
-
+    lcd_goto(0,0);
+    // lcd_print("ПРИВЕТ СТАННЫЙ МИР! Hello World!");
+    // lcd_print("0123456789012356");
+    lcd_print("UART LCD READY");
 
     while (1) {
-        // GPIO_PORTF_DATA_R ^= (1<<1);
-        delay(400000);
+        uart_poll();
+
+        if (uart_line_ready) {
+            uart_line_ready = false;
+            lcd_print_line(uart_buf);
+        }
     }
 }
