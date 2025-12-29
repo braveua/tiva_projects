@@ -81,6 +81,7 @@ static void uart_poll(void) {
     }
 }
 
+
 static uint8_t lcd_row = 0;
 
 static void lcd_print_line(const char *s) {
@@ -207,8 +208,7 @@ int main(void) {
     lcd_print("UART LCD READY");
 
     while (1) {
-        uart_poll();
-
+        // UART handled by interrupts in this build (see UART0IntHandler)
         if (uart_line_ready) {
             uart_line_ready = false;
             lcd_print_line(uart_buf);
