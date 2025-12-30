@@ -7,6 +7,7 @@
 #include "driverlib/gpio.h"
 #include "driverlib/ssi.h"
 #include "driverlib/pin_map.h" 
+#include "driverlib/systick.h"
 #include "driverlib/uart.h"
 #include "driverlib/interrupt.h"
 #include "inc/hw_ints.h"
@@ -18,6 +19,14 @@
 static char uart_buf[UART_BUF_SIZE];
 static volatile uint8_t uart_pos = 0;
 static volatile bool uart_line_ready = false;
+/* millisecond tick for debounce */
+static volatile uint32_t systick_ms = 0;
+#define DEBOUNCE_MS 50
+static volatile uint32_t last_btn1_ms = 0;
+static volatile uint32_t last_btn2_ms = 0;
+/* when non-zero, time (ms) at which GPIO interrupt for that pin will be re-enabled */
+static volatile uint32_t reenable_btn1_ms = 0;
+static volatile uint32_t reenable_btn2_ms = 0;
 /* LCD implementation moved to dashboard/lcd.c; public prototypes in dashboard/lcd.h */
 /* ensure lcd.c is compiled or included when building single-file projects */
 /* ===== Button pins (LaunchPad: PF4 = SW1, PF0 = SW2) ===== */
@@ -37,8 +46,16 @@ static void GPIOPortFIntHandler(void);
 // UART interrupt handler
 static void UART0IntHandler(void);
 
+// SysTick handler prototype (used for debounce timing)
+void SysTickHandler(void);
+
 // Initialize buttons on Port B and enable GPIO interrupts
 static void buttons_init(void) {
+    // For PF0 (NMI), unlock commit register before configuring
+    HWREG(BTN_PORT + GPIO_O_LOCK) = GPIO_LOCK_KEY;
+    HWREG(BTN_PORT + GPIO_O_CR) |= BTN2_PIN;
+    HWREG(BTN_PORT + GPIO_O_LOCK) = 0;
+
     // Configure PF4 and PF0 as inputs with internal pull-up resistors
     GPIOPinTypeGPIOInput(BTN_PORT, BTN1_PIN | BTN2_PIN);
     GPIOPadConfigSet(BTN_PORT, BTN1_PIN | BTN2_PIN,
@@ -46,11 +63,6 @@ static void buttons_init(void) {
 
     // Register GPIO Port F interrupt handler
     GPIOIntRegister(BTN_PORT, GPIOPortFIntHandler);
-
-    // For PF0 (NMI), unlock commit register before configuring
-    HWREG(BTN_PORT + GPIO_O_LOCK) = GPIO_LOCK_KEY;
-    HWREG(BTN_PORT + GPIO_O_CR) |= BTN2_PIN;
-    HWREG(BTN_PORT + GPIO_O_LOCK) = 0;
 
     // Configure to trigger on falling edge (button press -> line goes low)
     GPIOIntTypeSet(BTN_PORT, BTN1_PIN | BTN2_PIN, GPIO_FALLING_EDGE);
@@ -61,11 +73,7 @@ static void buttons_init(void) {
     // Enable the NVIC interrupt for GPIOF so handler runs
     IntEnable(INT_GPIOF);
 
-    // Debug mark that buttons_init completed
-    UARTCharPutNonBlocking(UART0_BASE, 'I');
-    UARTCharPutNonBlocking(UART0_BASE, 'N');
-    UARTCharPutNonBlocking(UART0_BASE, 'I');
-    UARTCharPutNonBlocking(UART0_BASE, '\n');
+    // buttons_init completed
 }
 /* ===== UART ===== */
 static void uart_init(void) {
@@ -104,6 +112,12 @@ int main(void) {
     SysCtlClockSet(SYSCTL_SYSDIV_4 | SYSCTL_USE_PLL |
                    SYSCTL_OSC_MAIN | SYSCTL_XTAL_16MHZ); // 50 MHz
 
+    /* Configure SysTick for 1 ms ticks used by debounce */
+    SysTickPeriodSet(SysCtlClockGet() / 1000);
+    SysTickIntRegister(SysTickHandler);
+    SysTickIntEnable();
+    SysTickEnable();
+
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA); // Enable GPIOA
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB); // Enable GPIOB
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF); // Enable GPIOF for LaunchPad buttons
@@ -131,39 +145,35 @@ int main(void) {
     // lcd_print("ПРИВЕТ СТАННЫЙ МИР! Hello World!");
     lcd_print("UART LCD READY");
 
-    // Debug: report initial button pin states over UART (1 = high, 0 = low)
-    {
-        uint8_t st = GPIOPinRead(BTN_PORT, BTN1_PIN | BTN2_PIN);
-        UARTCharPutNonBlocking(UART0_BASE, 'S');
-        UARTCharPutNonBlocking(UART0_BASE, ':');
-        UARTCharPutNonBlocking(UART0_BASE, (st & BTN1_PIN) ? '1' : '0');
-        UARTCharPutNonBlocking(UART0_BASE, ',');
-        UARTCharPutNonBlocking(UART0_BASE, (st & BTN2_PIN) ? '1' : '0');
-        UARTCharPutNonBlocking(UART0_BASE, '\n');
-    }
-
-    uint8_t prev = GPIOPinRead(BTN_PORT, BTN1_PIN | BTN2_PIN) & (BTN1_PIN | BTN2_PIN);
     while (1) {
-        // Poll button pins to detect hardware changes (debug)
-        uint8_t now = GPIOPinRead(BTN_PORT, BTN1_PIN | BTN2_PIN) & (BTN1_PIN | BTN2_PIN);
-        if (now != prev) {
-            UARTCharPutNonBlocking(UART0_BASE, 'P');
-            UARTCharPutNonBlocking(UART0_BASE, (now & BTN1_PIN) ? '1' : '0');
-            UARTCharPutNonBlocking(UART0_BASE, (now & BTN2_PIN) ? '1' : '0');
-            UARTCharPutNonBlocking(UART0_BASE, '\n');
-            prev = now;
-        }
-
         if (uart_line_ready) {
             uart_line_ready = false;
             lcd_print_line(uart_buf);
         }
-
-        SysCtlDelay(SysCtlClockGet() / 20);
+        SysCtlDelay(SysCtlClockGet() / 100);
     }
 }
 
 /* ===== New interrupt handlers and button actions ===== */
+
+// SysTick handler increments millisecond counter used for debounce
+void SysTickHandler(void) {
+    systick_ms++;
+
+    /* Re-enable GPIO interrupts for buttons when debounce period elapsed */
+    if (reenable_btn1_ms) {
+        if ((int32_t)(systick_ms - reenable_btn1_ms) >= 0) {
+            GPIOIntEnable(BTN_PORT, BTN1_PIN);
+            reenable_btn1_ms = 0;
+        }
+    }
+    if (reenable_btn2_ms) {
+        if ((int32_t)(systick_ms - reenable_btn2_ms) >= 0) {
+            GPIOIntEnable(BTN_PORT, BTN2_PIN);
+            reenable_btn2_ms = 0;
+        }
+    }
+}
 
 // GPIO Port F interrupt handler: called on button press (falling edge).
 // It determines which button caused the interrupt and calls the
@@ -174,26 +184,32 @@ static void GPIOPortFIntHandler(void) {
     // Clear the interrupts that we are handling
     GPIOIntClear(BTN_PORT, status);
 
+    uint32_t now = systick_ms;
+
     if (status & BTN1_PIN) {
-        // Debug: notify over UART that BTN1 interrupt fired
-        UARTCharPutNonBlocking(UART0_BASE, 'B');
-        UARTCharPutNonBlocking(UART0_BASE, '1');
-        UARTCharPutNonBlocking(UART0_BASE, '\n');
-        button1_action();
+        if ((now - last_btn1_ms) >= DEBOUNCE_MS) {
+            last_btn1_ms = now;
+            /* disable further GPIO interrupts for this pin until debounce expires */
+            GPIOIntDisable(BTN_PORT, BTN1_PIN);
+            reenable_btn1_ms = now + DEBOUNCE_MS;
+            button1_action();
+        }
     }
     if (status & BTN2_PIN) {
-        // Debug: notify over UART that BTN2 interrupt fired
-        UARTCharPutNonBlocking(UART0_BASE, 'B');
-        UARTCharPutNonBlocking(UART0_BASE, '2');
-        UARTCharPutNonBlocking(UART0_BASE, '\n');
-        button2_action();
+        if ((now - last_btn2_ms) >= DEBOUNCE_MS) {
+            last_btn2_ms = now;
+            /* disable further GPIO interrupts for this pin until debounce expires */
+            GPIOIntDisable(BTN_PORT, BTN2_PIN);
+            reenable_btn2_ms = now + DEBOUNCE_MS;
+            button2_action();
+        }
     }
 }
 
 // Simple action invoked on button 1 press.
 // Here we send a short message over UART and update the LCD.
 static void button1_action(void) {
-    const char *msg = "Button1 pressed\n";
+    const char *msg = "Button1 pressed\r\n";
     for (const char *p = msg; *p; ++p) UARTCharPutNonBlocking(UART0_BASE, *p);
     lcd_print_line("Button1");
 }
@@ -201,7 +217,7 @@ static void button1_action(void) {
 // Simple action invoked on button 2 press.
 // Toggles a short message on the LCD and sends via UART.
 static void button2_action(void) {
-    const char *msg = "Button2 pressed\n";
+    const char *msg = "Button2 pressed\r\n";
     for (const char *p = msg; *p; ++p) UARTCharPutNonBlocking(UART0_BASE, *p);
     lcd_print_line("Button2");
 }

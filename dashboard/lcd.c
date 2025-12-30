@@ -97,8 +97,7 @@ void lcd_print(const char *s) {
     while (*p) {
         uint8_t c = *p++;
 
-        // Debug: echo processed byte to UART so we can verify what's sent
-        UARTCharPutNonBlocking(UART0_BASE, c);
+        // (no debug echo)
 
         if (c < 0x80) lcd_char(c);
         else if (c == 0xD0) {

@@ -1,60 +1,90 @@
 {
-  "version": "2.0.0",
-  "tasks": [
-    {
-      "label": "Build & Flash (LM4F120, single file)",
-      "type": "shell",
-      // arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -Os -ffunction-sections  -fdata-sections -nostdlib -T blinky.ld -Wl,--gc-sections -Wl,-Map=blinky.map -g -Wall -Wextra -o blinky.elf blinky.c startup_gcc.c -I $TW -L /home/brave/ti/tivaware/driverlib/gcc -ldriver -lgcc -lc
-      // startup_gcc.c -I $TW -L /home/brave/ti/tivaware/driverlib/gcc -ldriver -lgcc -lc
-      "command": "arm-none-eabi-gcc",
-      "args": [
-        "-DPART_TM4C123GH6PM",
-        "-DTARGET_IS_TM4C123_RA1",
-        "-mcpu=cortex-m4",
-        "-mthumb",
-        "-mfloat-abi=hard",
-        "-mfpu=fpv4-sp-d16",
-        "-Os",
-        "-ffunction-sections",
-        "-fdata-sections",
-        "-nostdlib",
-        "-T", "/home/brave/ti/tivaware/common/tiva.ld",
-        "-Wl,--gc-sections",
-        "-Wl,-Map=${fileDirname}/${fileBasenameNoExtension}.map",
-        "-g",
-        "-Wall",
-        "-Wextra",
-        "-o", "${fileDirname}/${fileBasenameNoExtension}.elf",
-        "${workspaceFolder}/dashboard/hello.c",
-        "${workspaceFolder}/dashboard/lcd.c",
-        "${workspaceFolder}/dashboard/font.c",
-        "${workspaceFolder}/dashboard/memcpy.c",
-        "/home/brave/ti/tivaware/common/startup_gcc.c",
-
-	      "-I", "/home/brave/ti/tivaware",
-        "-I", "/home/brave/ti/tivaware/inc",
-
-        "-L", "/home/brave/ti/tivaware/driverlib/gcc",
-        "-ldriver",
-        "-lgcc",
-
-        "&&",
-        "arm-none-eabi-objcopy",
-        "-O", "binary",
-        "${fileDirname}/${fileBasenameNoExtension}.elf",
-        "${fileDirname}/${fileBasenameNoExtension}.bin",
-
-        "&&",
-        "lm4flash", "${fileDirname}/${fileBasenameNoExtension}.bin",
-
-        "&&", "rm", "${fileDirname}/*.elf", "${fileDirname}/*.bin", "${fileDirname}/*.map",
-      ],
-      "presentation": {
-        "echo": true,
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "problemMatcher": ["$gcc"]
-    }
-  ]
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build & Flash (LM4F120, single file)",
+            "type": "shell",
+            "command": "arm-none-eabi-gcc",
+            "args": [
+                "-DPART_TM4C123GH6PM",
+                "-DTARGET_IS_TM4C123_RA1",
+                "-mcpu=cortex-m4",
+                "-mthumb",
+                "-mfloat-abi=hard",
+                "-mfpu=fpv4-sp-d16",
+                "-Os",
+                "-ffunction-sections",
+                "-fdata-sections",
+                "-nostdlib",
+                "-T",
+                "/home/brave/ti/tivaware/common/tiva.ld",
+                "-Wl,--gc-sections",
+                "-Wl,-Map=${fileDirname}/${fileBasenameNoExtension}.map",
+                "-g",
+                "-Wall",
+                "-Wextra",
+                "-o",
+                "${fileDirname}/${fileBasenameNoExtension}.elf",
+                "${workspaceFolder}/dashboard/hello.c",
+                "${workspaceFolder}/dashboard/lcd.c",
+                "${workspaceFolder}/dashboard/font.c",
+                "${workspaceFolder}/dashboard/memcpy.c",
+                "/home/brave/ti/tivaware/common/startup_gcc.c",
+                "-I",
+                "/home/brave/ti/tivaware",
+                "-I",
+                "/home/brave/ti/tivaware/inc",
+                "-L",
+                "/home/brave/ti/tivaware/driverlib/gcc",
+                "-ldriver",
+                "-lgcc",
+                "&&",
+                "arm-none-eabi-objcopy",
+                "-O",
+                "binary",
+                "${fileDirname}/${fileBasenameNoExtension}.elf",
+                "${fileDirname}/${fileBasenameNoExtension}.bin",
+                "&&", "echo", "ssss!!!!!!!!!!" ,"${fileDirname}/${fileBasenameNoExtension}.bin",
+                "&&",
+                "lm4flash",
+                "${fileDirname}/${fileBasenameNoExtension}.bin",
+                // "&&",
+                // "rm",
+                // "${fileDirname}/*.elf",
+                // "${fileDirname}/*.bin",
+                // "${fileDirname}/*.map"
+            ],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "type": "cppbuild",
+            "label": "C/C++: arm-none-eabi-gcc сборка активного файла",
+            "command": "/usr/bin/arm-none-eabi-gcc",
+            "args": [
+                "-fdiagnostics-color=always",
+                "-g",
+                "${file}",
+                "-o",
+                "${fileDirname}/${fileBasenameNoExtension}"
+            ],
+            "options": {
+                "cwd": "${fileDirname}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Задача создана отладчиком."
+        }
+    ]
 }
